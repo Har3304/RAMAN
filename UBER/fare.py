@@ -1,5 +1,5 @@
 from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier
+from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, silhouette_score
 import pandas as pd
@@ -38,10 +38,12 @@ df.dropna(inplace=True)
 X = df.drop(['date', 'Date_time', 'fare_amount', 'pickup_time'], axis=1)
 y = df['fare_amount']
 
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = 0.2, random_state=42)
-
 scaler = StandardScaler()
 X = scaler.fit_transform(X.values)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = 0.2, random_state=42)
+
+
 
 model = RandomForestRegressor(n_estimators=100, random_state=42)
 model.fit(X_test, y_test)
