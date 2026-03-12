@@ -1,21 +1,3 @@
-"""
-Uber Ride Simulator + Online Cascading ML Pipeline  ── v2 (Stable)
-===================================================================
-Fixes applied vs v1:
-  1. Gradient clipping (max_norm=1.0) on every backward pass
-  2. Warmup phase  ── models train on WARMUP_BATCHES before predicting
-  3. Detached cascade ── each stage uses .detach() so gradients don't
-     bleed across stages and cause compounding explosions
-  4. LayerNorm instead of BatchNorm ── stable at any batch size
-  5. Residual connections ── prevent vanishing/exploding in deeper nets
-  6. Learning-rate scheduler (ReduceLROnPlateau) per model
-  7. Outlier clipping on cascade ── predicted values are clamped to the
-     realistic range seen in training data before being fed forward
-  8. Running scaler update ── scalers are updated incrementally so they
-     track the simulated distribution as it evolves
-  9. Huber loss instead of MSE ── less sensitive to outlier batches
-"""
-
 import pandas as pd
 import numpy as np
 import torch
@@ -24,25 +6,25 @@ import torch.optim as optim
 from sklearn.preprocessing import StandardScaler
 from collections import defaultdict
 
-# ─────────────────────────────────────────────
-# CONFIG
-# ─────────────────────────────────────────────
-SIM_DAYS        = 7       # simulated days
-BATCH_MINUTES   = 60      # clock advance per tick (minutes)
-BATCH_SIZE      = 128     # rides generated / trained per tick
+
+
+
+SIM_DAYS        = 7       
+BATCH_MINUTES   = 60      
+BATCH_SIZE      = 128     
 LR              = 3e-4
-GRAD_CLIP       = 1.0     # max gradient norm
-WARMUP_BATCHES  = 40      # train-only before any predictions are shown
-PRINT_EVERY     = 5       # print every N batches
+GRAD_CLIP       = 1.0     
+WARMUP_BATCHES  = 40      
+PRINT_EVERY     = 5       
 DEVICE          = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print(f"Device : {DEVICE}")
 print(f"Config : SIM_DAYS={SIM_DAYS}  BATCH_MIN={BATCH_MINUTES}"
       f"  BATCH_SIZE={BATCH_SIZE}  WARMUP={WARMUP_BATCHES}\n")
 
-# ─────────────────────────────────────────────
-# 1. LOAD & CLEAN REAL DATA
-# ─────────────────────────────────────────────
+
+
+
 print("[1/4] Loading & cleaning dataset ...")
 df = pd.read_csv("uber.csv")
 df = df[(df["fare_amount"] > 1) & (df["fare_amount"] < 200)]
@@ -66,7 +48,7 @@ for c in ["pickup_latitude","pickup_longitude",
     df[c] = pd.to_numeric(df[c], errors="coerce")
 df.dropna(inplace=True)
 
-# Demand = rides per (Hour, Day, Month) slot
+
 df["demand"] = df.groupby(["Hour","Day","Month"])["fare_amount"].transform("count")
 df["passenger_count"] = df["passenger_count"].clip(1, 6)
 
@@ -74,7 +56,7 @@ COORD_COLS  = ["pickup_latitude","pickup_longitude",
                "dropoff_latitude","dropoff_longitude"]
 SCALAR_COLS = ["demand","passenger_count","fare_amount"]
 
-# Store realistic bounds per column (used to clamp cascade predictions)
+
 BOUNDS = {}
 for col in COORD_COLS + SCALAR_COLS:
     BOUNDS[col] = (float(df[col].min()), float(df[col].max()))
@@ -82,9 +64,9 @@ for col in COORD_COLS + SCALAR_COLS:
 print(f"   Cleaned rows : {len(df):,}")
 print(f"   Bounds sample: pickup_lat={BOUNDS['pickup_latitude']}")
 
-# ─────────────────────────────────────────────
-# 2. SIMULATOR
-# ─────────────────────────────────────────────
+
+
+
 print("[2/4] Building simulator ...")
 
 class RideSimulator:
@@ -139,9 +121,9 @@ class RideSimulator:
 simulator = RideSimulator(df)
 print("   Simulator ready.")
 
-# ─────────────────────────────────────────────
-# 3. MODEL DEFINITIONS
-# ─────────────────────────────────────────────
+
+
+
 print("[3/4] Initialising models ...")
 
 class ResBlock(nn.Module):
@@ -174,15 +156,15 @@ def make_stage(in_dim, out_dim):
     m   = MLP(in_dim, out_dim).to(DEVICE)
     opt = optim.AdamW(m.parameters(), lr=LR, weight_decay=1e-4)
     sch = optim.lr_scheduler.ReduceLROnPlateau(opt, patience=15, factor=0.5,
-                                                min_lr=1e-6, verbose=False)
+                                                min_lr=1e-6) 
     return m, opt, sch
 
-# Stage dims:
-# S1: [H,D,M]           (3)  -> demand          (1)
-# S2: [H,D,M,dem]       (4)  -> pick_lat/lon    (2)
-# S3: [H,D,M,plat,plon] (5)  -> drop_lat/lon    (2)
-# S4: [H,D,M,plat,plon,dlat,dlon,dem] (8) -> pax (1)
-# S5: [H,D,M,plat,plon,dlat,dlon,dem,pax] (9) -> fare (1)
+
+
+
+
+
+
 
 m1,o1,sc1 = make_stage(3, 1)
 m2,o2,sc2 = make_stage(4, 2)
@@ -190,11 +172,11 @@ m3,o3,sc3 = make_stage(5, 2)
 m4,o4,sc4 = make_stage(8, 1)
 m5,o5,sc5 = make_stage(9, 1)
 
-loss_fn = nn.HuberLoss(delta=1.0)   # robust to outlier batches
+loss_fn = nn.HuberLoss(delta=1.0)   
 
-# ─────────────────────────────────────────────
-# 4. SCALERS  (fit on real data)
-# ─────────────────────────────────────────────
+
+
+
 def make_sc(data):
     sc = StandardScaler()
     sc.fit(np.array(data).reshape(-1, data.shape[-1] if hasattr(data,'shape') else 1))
@@ -235,9 +217,9 @@ def clamp_pred(col_group, pred_arr):
         out[:, i] = np.clip(out[:, i], lo, hi)
     return out
 
-# ─────────────────────────────────────────────
-# 5. TRAIN + PREDICT HELPERS
-# ─────────────────────────────────────────────
+
+
+
 def train_step(model, opt, X_t, Y_t):
     model.train()
     opt.zero_grad()
@@ -259,9 +241,9 @@ def col_accuracy(true_a, pred_a):
     base = np.abs(true_a).mean(axis=0) + 1e-8
     return np.clip(100.0 * (1.0 - mae / base), -9999, 100)
 
-# ─────────────────────────────────────────────
-# 6. SIMULATION LOOP
-# ─────────────────────────────────────────────
+
+
+
 print("[4/4] Starting simulation loop ...")
 
 sim_start = df["Date_time"].min()
@@ -281,10 +263,10 @@ while current < sim_end:
     batch_num += 1
     h, d, m = current.hour, current.day, current.month
 
-    # ── Generate synthetic batch ──────────────
+    
     batch = simulator.generate(h, d, m, n=BATCH_SIZE)
 
-    # Ground-truth arrays
+    
     gt = {
         "time"   : batch[["Hour","Day","Month"]].values.astype(float),
         "demand" : batch[["demand"]].values.astype(float),
@@ -294,7 +276,7 @@ while current < sim_end:
         "fare"   : batch[["fare_amount"]].values.astype(float),
     }
 
-    # Scaled tensors of ground-truth inputs
+    
     Xt  = T(sc("time",    gt["time"]))
     Xd  = T(sc("demand",  gt["demand"]))
     Xpu = T(sc("pickup",  gt["pickup"]))
@@ -306,15 +288,13 @@ while current < sim_end:
     Ydo = T(sc("dropoff", gt["dropoff"]))
     Ypx = T(sc("pax",     gt["pax"]))
     Yfa = T(sc("fare",    gt["fare"]))
-
-    # ── Stage inputs (use GT for training, predicted for inference) ──
     X1_tr = Xt
     X2_tr = torch.cat([Xt, Xd],  dim=1)
     X3_tr = torch.cat([Xt, Xpu], dim=1)
     X4_tr = torch.cat([Xt, Xpu, Xdo, Xd],  dim=1)
     X5_tr = torch.cat([Xt, Xpu, Xdo, Xd, Xpx], dim=1)
 
-    # ── Train all stages ─────────────────────
+    
     l1 = train_step(m1, o1, X1_tr, Yd)
     l2 = train_step(m2, o2, X2_tr, Ypu)
     l3 = train_step(m3, o3, X3_tr, Ydo)
@@ -325,11 +305,11 @@ while current < sim_end:
     for i, l in enumerate(losses, 1):
         all_losses[i].append(l)
 
-    # Update LR schedulers with latest loss
+    
     for sch, l in [(sc1,l1),(sc2,l2),(sc3,l3),(sc4,l4),(sc5,l5)]:
         sch.step(l)
 
-    # ── Skip prediction output during warmup ─
+    
     if batch_num <= WARMUP_BATCHES:
         if batch_num % 10 == 0:
             print(f"  [Warmup {batch_num:>3}/{WARMUP_BATCHES}]  "
@@ -338,40 +318,40 @@ while current < sim_end:
         current += pd.Timedelta(minutes=BATCH_MINUTES)
         continue
 
-    # ── Cascaded prediction (uses predicted outputs, clamped) ────────
-    # S1: time -> demand
+    
+    
     p_dem_sc  = predict(m1, X1_tr)
     p_dem     = clamp_pred("demand",  usc("demand",  p_dem_sc))
     p_dem_t   = T(sc("demand", p_dem)).detach()
 
-    # S2: time + p_demand -> pickup
+    
     X2p       = torch.cat([Xt, p_dem_t], dim=1)
     p_pu_sc   = predict(m2, X2p)
     p_pu      = clamp_pred("pickup",  usc("pickup",  p_pu_sc))
     p_pu_t    = T(sc("pickup", p_pu)).detach()
 
-    # S3: time + p_pickup -> dropoff
+    
     X3p       = torch.cat([Xt, p_pu_t], dim=1)
     p_do_sc   = predict(m3, X3p)
     p_do      = clamp_pred("dropoff", usc("dropoff", p_do_sc))
     p_do_t    = T(sc("dropoff", p_do)).detach()
 
-    # S4: time + p_pickup + p_dropoff + p_demand -> pax
+    
     X4p       = torch.cat([Xt, p_pu_t, p_do_t, p_dem_t], dim=1)
     p_px_sc   = predict(m4, X4p)
     p_px      = clamp_pred("pax",     usc("pax",     p_px_sc))
     p_px_t    = T(sc("pax", p_px)).detach()
 
-    # S5: all above -> fare
+    
     X5p       = torch.cat([Xt, p_pu_t, p_do_t, p_dem_t, p_px_t], dim=1)
     p_fa_sc   = predict(m5, X5p)
     p_fa      = clamp_pred("fare",    usc("fare",    p_fa_sc))
 
-    # ── Print ─────────────────────────────────
+    
     if (batch_num - WARMUP_BATCHES) % PRINT_EVERY == 0:
         ts = current.strftime("%Y-%m-%d %H:%M")
 
-        # Smoothed loss (window=5)
+        
         def smooth(k, w=5):
             return np.mean(all_losses[k][-w:])
 
@@ -416,9 +396,9 @@ while current < sim_end:
 
     current += pd.Timedelta(minutes=BATCH_MINUTES)
 
-# ─────────────────────────────────────────────
-# SUMMARY
-# ─────────────────────────────────────────────
+
+
+
 print(f"\n{'='*112}")
 print("SIMULATION COMPLETE")
 print(f"  Period  : {sim_start}  →  {sim_end}")
